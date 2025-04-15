@@ -76,13 +76,30 @@ to setup
 end
 
 to go
-  if ticks >= 500 [ stop ]
+  if ticks >= 1500 [ stop ]
   generate-rides
   dispatch-taxis dispatch-strategy
   move-taxis
   tick
 end
 
+to generate-rides
+  if (random-float 1 < 0.3) and (length ride-requests < 20) [
+    let pickup-spot one-of patches with [is-street?]
+    let dropoff-spot one-of patches with [is-street? and self != pickup-spot]
+
+    if (pickup-spot != nobody and dropoff-spot != nobody) [
+      let new-request (list (list [pxcor] of pickup-spot [pycor] of pickup-spot)
+                            (list [pxcor] of dropoff-spot [pycor] of dropoff-spot)
+                            ticks)
+      set ride-requests lput new-request ride-requests
+      ask pickup-spot [set pcolor green]
+      ask dropoff-spot [set pcolor red]
+
+
+    ]
+  ]
+end
 
 
 to dispatch-taxis [strategy]
@@ -159,7 +176,63 @@ to dispatch-taxis [strategy]
       ]
     ]
   ]
+  if strategy = "super-smart" [
+    let available-taxis turtles with [
+      not has-passenger? and not dispatched? and not member? self assigned-taxis
+    ]
 
+    ask available-taxis [
+      let taxi-x xcor
+      let taxi-y ycor
+
+      let sorted-requests sort-by
+      [[a b] ->
+        distancexy (item 0 (first a)) (item 1 (first a)) <
+        distancexy (item 0 (first b)) (item 1 (first b))
+      ]
+      unassigned-requests
+
+      let top-3 sublist sorted-requests 0 (min (list 3 length sorted-requests))
+
+      let best-request nobody
+      let best-cost 1e10
+
+      foreach top-3 [ request ->
+        let pickup-x item 0 (first request)
+        let pickup-y item 1 (first request)
+        let dropoff-x item 0 (item 1 request)
+        let dropoff-y item 1 (item 1 request)
+
+        let pickup-cost dijkstra-cost taxi-x taxi-y pickup-x pickup-y
+        let dropoff-cost dijkstra-cost pickup-x pickup-y dropoff-x dropoff-y
+
+        ;; Log the results
+        show (word "Taxi " who " testing request: " request)
+        show (word "  Pickup cost: " pickup-cost ", Dropoff cost: " dropoff-cost)
+
+        if pickup-cost < 1e9 and dropoff-cost < 1e9 [
+          let total-cost pickup-cost + dropoff-cost
+          if total-cost < best-cost [
+            set best-cost total-cost
+            set best-request request
+          ]
+        ]
+      ]
+
+      ifelse best-request != nobody [
+        set destination best-request
+        set dispatched? true
+        set has-passenger? false
+        set color blue
+        set assigned-taxis lput self assigned-taxis
+        set unassigned-requests remove best-request unassigned-requests
+        show (word "Taxi " who " assigned to request: " best-request)
+      ] [
+        show (word "Taxi " who " found no valid request.")
+      ]
+
+    ]
+  ]
 
 
 end
@@ -251,6 +324,13 @@ to move-algo [tpatch]
     ]
   ]
 end
+
+
+
+
+
+
+
 
 to-report is-corner? [p]
   let vertical? any? patches with [
@@ -360,7 +440,7 @@ num-taxis
 num-taxis
 1
 50
-25.0
+11.0
 1
 1
 NIL
@@ -374,7 +454,7 @@ CHOOSER
 dispatch-strategy
 dispatch-strategy
 "nearest" "smart" "super-smart"
-1
+2
 
 BUTTON
 0

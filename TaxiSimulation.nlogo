@@ -76,7 +76,7 @@ to setup
 end
 
 to go
-  if ticks >= 500 [ stop ]
+  if ticks >= 1500 [ stop ]
   generate-rides
   dispatch-taxis dispatch-strategy
   move-taxis
@@ -95,6 +95,8 @@ to generate-rides
       set ride-requests lput new-request ride-requests
       ask pickup-spot [set pcolor green]
       ask dropoff-spot [set pcolor red]
+
+
     ]
   ]
 end
@@ -174,7 +176,63 @@ to dispatch-taxis [strategy]
       ]
     ]
   ]
+  if strategy = "super-smart" [
+    let available-taxis turtles with [
+      not has-passenger? and not dispatched? and not member? self assigned-taxis
+    ]
 
+    ask available-taxis [
+      let taxi-x xcor
+      let taxi-y ycor
+
+      let sorted-requests sort-by
+      [[a b] ->
+        distancexy (item 0 (first a)) (item 1 (first a)) <
+        distancexy (item 0 (first b)) (item 1 (first b))
+      ]
+      unassigned-requests
+
+      let top-3 sublist sorted-requests 0 (min (list 3 length sorted-requests))
+
+      let best-request nobody
+      let best-cost 1e10
+
+      foreach top-3 [ request ->
+        let pickup-x item 0 (first request)
+        let pickup-y item 1 (first request)
+        let dropoff-x item 0 (item 1 request)
+        let dropoff-y item 1 (item 1 request)
+
+        let pickup-cost dijkstra-cost taxi-x taxi-y pickup-x pickup-y
+        let dropoff-cost dijkstra-cost pickup-x pickup-y dropoff-x dropoff-y
+
+        ;; Log the results
+        show (word "Taxi " who " testing request: " request)
+        show (word "  Pickup cost: " pickup-cost ", Dropoff cost: " dropoff-cost)
+
+        if pickup-cost < 1e9 and dropoff-cost < 1e9 [
+          let total-cost pickup-cost + dropoff-cost
+          if total-cost < best-cost [
+            set best-cost total-cost
+            set best-request request
+          ]
+        ]
+      ]
+
+      ifelse best-request != nobody [
+        set destination best-request
+        set dispatched? true
+        set has-passenger? false
+        set color blue
+        set assigned-taxis lput self assigned-taxis
+        set unassigned-requests remove best-request unassigned-requests
+        show (word "Taxi " who " assigned to request: " best-request)
+      ] [
+        show (word "Taxi " who " found no valid request.")
+      ]
+
+    ]
+  ]
 
 
 end
@@ -266,6 +324,68 @@ to move-algo [tpatch]
     ]
   ]
 end
+to-report dijkstra-cost [start-x start-y end-x end-y]
+  let frontier (list (list (list start-x start-y) 0))  ;; [ [x y] cost ]
+  let visited []
+  let costs table:make
+  table:put costs (list start-x start-y) 0
+
+  while [not empty? frontier] [
+    let current-pair first frontier
+    let current-coords item 0 current-pair
+    let current-cost item 1 current-pair
+
+    let current-x item 0 current-coords
+    let current-y item 1 current-coords
+
+    set frontier but-first frontier
+
+    ;; BOUNDS CHECK (required to avoid patch-at errors)
+    if is-number? current-x and is-number? current-y and
+       current-x >= min-pxcor and current-x <= max-pxcor and
+       current-y >= min-pycor and current-y <= max-pycor [
+
+      let current-patch patch current-x current-y
+
+      ;; GOAL REACHED
+      if current-x = end-x and current-y = end-y [
+        report current-cost
+      ]
+
+      ;; VISIT ONLY ONCE
+      if not member? current-coords visited [
+        set visited lput current-coords visited
+
+        ask current-patch [
+          let local-neighbors neighbors4 with [is-street?]
+          foreach sort local-neighbors [  ;; sort ensures determinism
+            neighbor ->
+            let neighbor-x [pxcor] of neighbor
+            let neighbor-y [pycor] of neighbor
+            let neighbor-coords list neighbor-x neighbor-y
+            let traffic [traffic-level] of neighbor
+            let new-cost current-cost + traffic
+
+            if not table:has-key? costs neighbor-coords or new-cost < table:get costs neighbor-coords [
+              table:put costs neighbor-coords new-cost
+              set frontier lput (list neighbor-coords new-cost) frontier
+            ]
+          ]
+        ]
+      ]
+    ]
+
+    ;; Always keep frontier sorted by cost
+    set frontier sort-by [[a b] -> item 1 a < item 1 b] frontier
+  ]
+
+  report 1e10  ;; unreachable
+end
+
+
+
+
+
 
 to-report is-corner? [p]
   let vertical? any? patches with [
@@ -375,7 +495,7 @@ num-taxis
 num-taxis
 1
 50
-25.0
+11.0
 1
 1
 NIL
@@ -389,7 +509,7 @@ CHOOSER
 dispatch-strategy
 dispatch-strategy
 "nearest" "smart" "super-smart"
-1
+2
 
 BUTTON
 0
