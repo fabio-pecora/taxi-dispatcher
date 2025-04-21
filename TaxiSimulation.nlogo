@@ -76,7 +76,7 @@ to setup
 end
 
 to go
-  if ticks >= 1500 [ stop ]
+  if ticks >= 2000 [ stop ]
   generate-rides
   dispatch-taxis dispatch-strategy
   move-taxis
@@ -95,11 +95,121 @@ to generate-rides
       set ride-requests lput new-request ride-requests
       ask pickup-spot [set pcolor green]
       ask dropoff-spot [set pcolor red]
-
-
     ]
   ]
 end
+
+to-report best-of-5-path-cost [start-x start-y end-x end-y]
+  let directions [
+    ["hv"]  ;; horizontal first, then vertical
+    ["vh"]  ;; vertical first, then horizontal
+    ["zigzag1"]
+    ["zigzag2"]
+    ["straight-diagonal"]
+  ]
+  let best-cost 1e10
+
+  foreach directions [ pattern ->
+    let cost estimate-path-cost start-x start-y end-x end-y pattern
+    if cost < best-cost [
+      set best-cost cost
+    ]
+  ]
+
+  report best-cost
+end
+
+to-report estimate-path-cost [x1 y1 x2 y2 style]
+  let cost 0
+  let x x1
+  let y y1
+  let step-count 0
+  let max-steps 200
+
+  show (word "🧠 Estimating path [" style "] from (" x1 "," y1 ") to (" x2 "," y2 ")")
+
+  while [x != x2 or y != y2 and step-count < max-steps] [
+    set step-count step-count + 1
+    show (word "🚶 Step " step-count ": (" x "," y ")")
+
+    ;; Movement logic (guarantees progress)
+    if style = "hv" [
+      if x != x2 [ set x x + sign(x2 - x) ]
+      if x = x2 and y != y2 [ set y y + sign(y2 - y) ]
+    ]
+
+    if style = "vh" [
+      if y != y2 [ set y y + sign(y2 - y) ]
+      if y = y2 and x != x2 [ set x x + sign(x2 - x) ]
+    ]
+
+    if style = "zigzag1" [
+      if step-count mod 2 = 0 and x != x2 [
+        set x x + sign(x2 - x)
+      ]
+      if step-count mod 2 != 0 and y != y2 [
+        set y y + sign(y2 - y)
+      ]
+      ;; fallback
+      if x = x1 and y = y1 [
+        if x != x2 [ set x x + sign(x2 - x) ]
+        if y != y2 [ set y y + sign(y2 - y) ]
+      ]
+    ]
+
+    if style = "zigzag2" [
+      if step-count mod 2 = 0 and y != y2 [
+        set y y + sign(y2 - y)
+      ]
+      if step-count mod 2 != 0 and x != x2 [
+        set x x + sign(x2 - x)
+      ]
+      ;; fallback
+      if x = x1 and y = y1 [
+        if x != x2 [ set x x + sign(x2 - x) ]
+        if y != y2 [ set y y + sign(y2 - y) ]
+      ]
+    ]
+
+    if style = "bounce" [
+      if step-count mod 4 < 2 and x != x2 [
+        set x x + sign(x2 - x)
+      ]
+      if step-count mod 4 >= 2 and y != y2 [
+        set y y + sign(y2 - y)
+      ]
+    ]
+
+    ;; Traffic cost
+    if x >= min-pxcor and x <= max-pxcor and y >= min-pycor and y <= max-pycor [
+      let p patch x y
+      if p != nobody [
+        if [is-street?] of p [
+          set cost cost + [traffic-level] of p
+        ]
+        if not [is-street?] of p [
+          set cost cost + 5
+        ]
+      ]
+    ]
+
+    if x < min-pxcor or x > max-pxcor or y < min-pycor or y > max-pycor [
+      show (word "⚠️ Out of bounds at (" x "," y "), adding penalty.")
+      set cost cost + 10
+    ]
+  ]
+
+  if step-count >= max-steps [
+    show (word "💀 Max steps reached at (" x "," y ") — giving up.")
+    report 1e10
+  ]
+
+  show (word "✅ Final cost: " cost)
+  report cost
+end
+
+
+
 
 
 to dispatch-taxis [strategy]
@@ -112,6 +222,33 @@ to dispatch-taxis [strategy]
       set unassigned-requests lput request unassigned-requests
     ]
   ]
+
+  if strategy = "random" [
+    let available-taxis turtles with [
+      not has-passenger? and not dispatched?
+    ]
+
+    let shuffled-requests shuffle unassigned-requests
+
+    foreach (list available-taxis) [ taxi ->
+      if length shuffled-requests > 0 [
+        let request first shuffled-requests  ;; pick one in order
+        set shuffled-requests but-first shuffled-requests  ;; remove it so no one else gets it
+
+        ask taxi [
+          set destination request
+          set dispatched? true
+          set has-passenger? false
+          set color cyan
+        ]
+        set assigned-taxis lput taxi assigned-taxis
+        set unassigned-requests remove request unassigned-requests
+      ]
+    ]
+  ]
+
+
+
 
   if strategy = "nearest" [
     foreach unassigned-requests [ request ->
@@ -177,6 +314,8 @@ to dispatch-taxis [strategy]
     ]
   ]
   if strategy = "super-smart" [
+    let k 3  ;; number of ride requests to evaluate per taxi
+
     let available-taxis turtles with [
       not has-passenger? and not dispatched? and not member? self assigned-taxis
     ]
@@ -184,55 +323,52 @@ to dispatch-taxis [strategy]
     ask available-taxis [
       let taxi-x xcor
       let taxi-y ycor
+      show (word "🚕 Taxi " who " starting super-smart dispatch from (" taxi-x "," taxi-y ")")
 
       let sorted-requests sort-by
       [[a b] ->
         distancexy (item 0 (first a)) (item 1 (first a)) <
         distancexy (item 0 (first b)) (item 1 (first b))
-      ]
-      unassigned-requests
+      ] unassigned-requests
 
-      let top-3 sublist sorted-requests 0 (min (list 3 length sorted-requests))
+      let top-k sublist sorted-requests 0 (min (list k length sorted-requests))
 
       let best-request nobody
       let best-cost 1e10
 
-      foreach top-3 [ request ->
+      foreach top-k [ request ->
         let pickup-x item 0 (first request)
         let pickup-y item 1 (first request)
-        let dropoff-x item 0 (item 1 request)
-        let dropoff-y item 1 (item 1 request)
+        show (word "🔍 Taxi " who " checking request: " request)
 
-        let pickup-cost dijkstra-cost taxi-x taxi-y pickup-x pickup-y
-        let dropoff-cost dijkstra-cost pickup-x pickup-y dropoff-x dropoff-y
+        let cost best-of-5-path-cost taxi-x taxi-y pickup-x pickup-y
+        show (word "📏 Estimated pickup path cost: " cost)
 
-        ;; Log the results
-        show (word "Taxi " who " testing request: " request)
-        show (word "  Pickup cost: " pickup-cost ", Dropoff cost: " dropoff-cost)
-
-        if pickup-cost < 1e9 and dropoff-cost < 1e9 [
-          let total-cost pickup-cost + dropoff-cost
-          if total-cost < best-cost [
-            set best-cost total-cost
-            set best-request request
-          ]
+        if cost < best-cost [
+          set best-cost cost
+          set best-request request
+          show (word "✅ New best request for Taxi " who ": " request " (Cost: " cost ")")
         ]
       ]
-
-      ifelse best-request != nobody [
+     ifelse best-request != nobody [
         set destination best-request
         set dispatched? true
         set has-passenger? false
         set color blue
         set assigned-taxis lput self assigned-taxis
         set unassigned-requests remove best-request unassigned-requests
-        show (word "Taxi " who " assigned to request: " best-request)
+        show (word "🎯 Taxi " who " assigned to: " best-request)
       ] [
-        show (word "Taxi " who " found no valid request.")
+        show (word "⚠️ Taxi " who " found NO valid request.")
       ]
 
     ]
   ]
+
+
+
+
+
 
 
 end
@@ -310,6 +446,14 @@ to move-taxis
         recolor-street patch-here
       ]
     ]
+
+    if dispatched? and not member? destination ride-requests [
+      ;; The ride was picked up already — cancel this taxi's trip
+      set dispatched? false
+      set destination []
+      set color black
+    ]
+
   ]
 end
 
@@ -324,68 +468,6 @@ to move-algo [tpatch]
     ]
   ]
 end
-to-report dijkstra-cost [start-x start-y end-x end-y]
-  let frontier (list (list (list start-x start-y) 0))  ;; [ [x y] cost ]
-  let visited []
-  let costs table:make
-  table:put costs (list start-x start-y) 0
-
-  while [not empty? frontier] [
-    let current-pair first frontier
-    let current-coords item 0 current-pair
-    let current-cost item 1 current-pair
-
-    let current-x item 0 current-coords
-    let current-y item 1 current-coords
-
-    set frontier but-first frontier
-
-    ;; BOUNDS CHECK (required to avoid patch-at errors)
-    if is-number? current-x and is-number? current-y and
-       current-x >= min-pxcor and current-x <= max-pxcor and
-       current-y >= min-pycor and current-y <= max-pycor [
-
-      let current-patch patch current-x current-y
-
-      ;; GOAL REACHED
-      if current-x = end-x and current-y = end-y [
-        report current-cost
-      ]
-
-      ;; VISIT ONLY ONCE
-      if not member? current-coords visited [
-        set visited lput current-coords visited
-
-        ask current-patch [
-          let local-neighbors neighbors4 with [is-street?]
-          foreach sort local-neighbors [  ;; sort ensures determinism
-            neighbor ->
-            let neighbor-x [pxcor] of neighbor
-            let neighbor-y [pycor] of neighbor
-            let neighbor-coords list neighbor-x neighbor-y
-            let traffic [traffic-level] of neighbor
-            let new-cost current-cost + traffic
-
-            if not table:has-key? costs neighbor-coords or new-cost < table:get costs neighbor-coords [
-              table:put costs neighbor-coords new-cost
-              set frontier lput (list neighbor-coords new-cost) frontier
-            ]
-          ]
-        ]
-      ]
-    ]
-
-    ;; Always keep frontier sorted by cost
-    set frontier sort-by [[a b] -> item 1 a < item 1 b] frontier
-  ]
-
-  report 1e10  ;; unreachable
-end
-
-
-
-
-
 
 to-report is-corner? [p]
   let vertical? any? patches with [
@@ -508,8 +590,8 @@ CHOOSER
 134
 dispatch-strategy
 dispatch-strategy
-"nearest" "smart" "super-smart"
-2
+"random" "nearest" "smart" "super-smart"
+3
 
 BUTTON
 0
